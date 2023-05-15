@@ -1,0 +1,135 @@
+---
+title: "Player Readiness Report"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+# Load libraries
+library(ggplot2)
+library(shiny)
+library(lavaan)
+library(semPlot)
+library(lavaanPlot)
+library(kableExtra)
+library(leaflet)
+library(DT)
+# Look at the dataset
+Data<-read.csv('stress_only.csv') #created in stress_only_data.py
+Data$Date <- as.Date(Data$Date)
+
+# Define your model specification
+
+model.specs <-'
+# measurment model
+physical_readiness =~ Physical_Performance_Capability  + Overall_Recovery + Overall_Stress_Score+   Muscular_Stress_Score +  Number_of_Sore_Areas
+emotional_readiness=~ Mental_Performance_Capability  + Hours_of_Sleep_Previous_Night+ Lack_of_Activation_Score + Negative_Emotional_State_Score+ Emotional_Balance
+
+
+# residual correlations
+
+Negative_Emotional_State_Score ~~  Emotional_Balance
+Mental_Performance_Capability ~~               Emotional_Balance
+Mental_Performance_Capability ~~  Negative_Emotional_State_Score
+Lack_of_Activation_Score ~~  Negative_Emotional_State_Score
+#Countermovement_Depth_cm ~~           Muscular_Stress_Score
+Muscular_Stress_Score ~~            Number_of_Sore_Areas
+Physical_Performance_Capability ~~   Mental_Performance_Capability
+Overall_Stress_Score ~~           Muscular_Stress_Score
+Overall_Recovery ~~   Mental_Performance_Capability
+'
+fit <-sem(model= model.specs, data = Data)
+
+## ------------------------------------------
+## merge factor scores to original data.frame 
+## and calculate percentiles
+## ------------------------------------------
+fscores <- lavPredict(fit)
+idx <- lavInspect(fit, "case.idx")
+## loop over factors to append factor scores to Data
+for (fs in colnames(fscores)) {
+  Data[idx, fs] <- fscores[ , fs]
+}
+# Calculate the percentiles
+physical_readiness_ecdf <- ecdf(Data$physical_readiness)
+Data$physical_readiness_percentile <- physical_readiness_ecdf(Data$physical_readiness) * 100
+
+emotional_readiness_ecdf <- ecdf(Data$emotional_readiness)
+Data$emotional_readiness_percentile <- emotional_readiness_ecdf(Data$emotional_readiness) * 100
+
+## ------------------------------------------
+
+```
+
+```{r}
+ui <- fluidPage(
+  # UI for selecting a player
+  selectInput("player_id", "Select Player:", choices = unique(Data$Player_ID)),
+  
+  # Output plot for the selected player
+  plotOutput("readiness_plot"),
+  
+  # UI for selecting a date
+  dateInput("selected_date", "Select Date:", as.Date("2021-10-20"),
+            min = min(Data$Date), max = max(Data$Date),
+            format = "yyyy-mm-dd", dates = unique(Data$Date)),
+  
+  # Output table for the selected date
+  DTOutput("readiness_table") # Change this to DTOutput for the datatable
+)
+
+
+
+
+server <- function(input, output, session) {
+  output$readiness_plot <- renderPlot({
+    # Filter data for the specific player
+    player_data <- Data[Data$Player_ID == input$player_id, ]
+    
+    # Check if there's data for the player
+    if (nrow(player_data) == 0) {
+      return(NULL)
+    }
+    
+    # Create the plot
+    ggplot(player_data, aes(x = Date)) +
+      geom_line(aes(y = physical_readiness_percentile, color = "Physical Readiness")) +
+      geom_line(aes(y = emotional_readiness_percentile, color = "Emotional Readiness")) +
+      scale_color_manual(values = c("Physical Readiness" = "blue", "Emotional Readiness" = "red")) +
+      labs(title = paste("Readiness Scores for Player", input$player_id),
+           x = "Date",
+           y = "Readiness Percentile",
+           color = "Readiness Type") +
+      theme_minimal()
+  })
+
+  output$readiness_table <- renderDT({
+    # Filter data for the selected date
+    date_data <- Data[Data$Date == input$selected_date, ]
+    
+    # Check if there's data for the selected date
+    if (nrow(date_data) == 0) {
+      return(NULL)
+    }
+    
+    # Select relevant columns
+    date_data <- date_data[, c("Player_ID", "Date", "physical_readiness_percentile", "emotional_readiness_percentile")]
+
+    # Round the last two columns to one decimal place
+    date_data$physical_readiness_percentile <- round(date_data$physical_readiness_percentile, 1)
+    date_data$emotional_readiness_percentile <- round(date_data$emotional_readiness_percentile, 1)
+
+    # Render DataTable
+    datatable(date_data, 
+              options = list(pageLength = 25, autoWidth = TRUE, order = list(list(1, 'asc'))),
+              rownames = FALSE,
+              escape = FALSE, class = 'cell-border stripe') %>%
+      formatDate(columns = "Date", method = "toLocaleDateString")
+  })
+
+}
+
+# Add this line to render the Shiny app
+shinyApp(ui, server, options = list(height = 1080))
+```
